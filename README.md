@@ -23,6 +23,13 @@ El script te pedirá un Personal Access Token (scope `Packaging → Read`) la pr
 en pantalla. Después de instalar, `maia --version` funciona en cualquier repositorio, sin necesidad de
 clonar el código fuente de MAIA.
 
+> **Estado de verificación por plataforma:** `install.sh` está escrito para ser portable
+> (bash 3.2+, solo POSIX) y su lógica de permisos se probó empíricamente en macOS; el flujo
+> completo (macOS y Linux) todavía no se corrió de punta a punta contra el feed real.
+> `install.ps1` (Windows) solo se revisó manualmente — no se ha ejecutado ni una vez. Si lo
+> corres, avisa en el repo principal de MAIA (issue o mensaje al equipo de IA Practice) para
+> poder quitar este aviso.
+
 ## Actualizar
 
 ```bash
