@@ -79,30 +79,41 @@ if [ -f "$UV_CONFIG_FILE" ]; then
   chmod 600 "$UV_CONFIG_FILE"
 fi
 
-if [ -f "$UV_CONFIG_FILE" ] && grep -q "name = \"${FEED}\"" "$UV_CONFIG_FILE" 2>/dev/null; then
-  warn "~/.config/uv/uv.toml ya tiene el índice '${FEED}' — no lo duplico (bórralo a mano si el PAT venció)."
-else
-  # Escribe en un archivo temporal (mktemp lo crea con permisos 600 desde su creación —
-  # comportamiento estándar de GNU coreutils/BSD) y muévelo encima con `mv` (atómico en el
-  # mismo filesystem) — así el PAT nunca queda, ni por un instante, en un archivo con permisos
-  # abiertos: evita la carrera de "escribir el secreto primero, restringir permisos después"
-  # (TOCTOU) que tenía la versión anterior (`>> archivo` seguido de `chmod`).
-  UV_CONFIG_TMP="$(mktemp "${UV_CONFIG_DIR}/.uv.toml.XXXXXX")"
-  trap 'rm -f "$UV_CONFIG_TMP"' EXIT
-  if [ -f "$UV_CONFIG_FILE" ]; then
-    cat "$UV_CONFIG_FILE" > "$UV_CONFIG_TMP"
-  fi
-  {
-    echo ""
-    echo "[[index]]"
-    echo "name = \"${FEED}\""
-    echo "url = \"${AUTHED_INDEX_URL}\""
-  } >> "$UV_CONFIG_TMP"
-  chmod 600 "$UV_CONFIG_TMP"
-  mv "$UV_CONFIG_TMP" "$UV_CONFIG_FILE"
-  trap - EXIT
-  ok "Índice '${FEED}' agregado a ~/.config/uv/uv.toml (permisos 600 — solo tú puedes leerlo)"
+# Si ya existe una entrada para este feed (de una corrida anterior), la REEMPLAZA con el PAT que
+# el usuario acaba de dar, en vez de descartarlo en silencio. Bug real reproducido (Windows,
+# mismo script con la misma lógica): un usuario re-corrió el instalador con un PAT nuevo porque
+# el primero había vencido; el script detectó "ya configurado", NUNCA escribió el PAT recién
+# pegado, y siguió usando el viejo — la instalación fallaba con 401 y parecía un problema del PAT
+# nuevo cuando en realidad nunca se usó. Pegar un PAT es una señal explícita de "quiero
+# (re)configurar esto", no algo para ignorar. El awk quita SOLO el bloque `[[index]]` de este feed
+# (por nombre), preservando cualquier otro índice que el usuario tenga configurado.
+UV_CONFIG_TMP="$(mktemp "${UV_CONFIG_DIR}/.uv.toml.XXXXXX")"
+trap 'rm -f "$UV_CONFIG_TMP"' EXIT
+if [ -f "$UV_CONFIG_FILE" ]; then
+  awk -v feed="$FEED" '
+    /^\[\[index\]\]$/ {
+      if (inblock && !match_feed) printf "%s", block
+      block = $0 "\n"; inblock = 1; match_feed = 0; next
+    }
+    inblock {
+      block = block $0 "\n"
+      if ($0 ~ ("^name = \"" feed "\"$")) match_feed = 1
+      next
+    }
+    { print }
+    END { if (inblock && !match_feed) printf "%s", block }
+  ' "$UV_CONFIG_FILE" > "$UV_CONFIG_TMP"
 fi
+{
+  echo ""
+  echo "[[index]]"
+  echo "name = \"${FEED}\""
+  echo "url = \"${AUTHED_INDEX_URL}\""
+} >> "$UV_CONFIG_TMP"
+chmod 600 "$UV_CONFIG_TMP"
+mv "$UV_CONFIG_TMP" "$UV_CONFIG_FILE"
+trap - EXIT
+ok "Índice '${FEED}' escrito en ~/.config/uv/uv.toml con el PAT actual (permisos 600 — solo tú puedes leerlo)"
 
 # ─── 4) Instala `maia` como tool global ──────────────────────────────────────
 # Sin --index aquí a propósito: el PAT NUNCA va como argumento de línea de comandos (ver nota

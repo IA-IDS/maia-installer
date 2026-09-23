@@ -82,34 +82,66 @@ if (Test-Path $UvConfigFile) {
     Protect-UvConfigFile -Path $UvConfigFile
 }
 
-$AlreadyConfigured = $false
-if (Test-Path $UvConfigFile) {
-    $AlreadyConfigured = (Select-String -Path $UvConfigFile -Pattern "name = `"$Feed`"" -Quiet)
-}
-if ($AlreadyConfigured) {
-    Write-Warn "$UvConfigFile ya tiene el indice '$Feed' - no lo duplico (borralo a mano si el PAT vencio)."
-} else {
-    # Escribe en un archivo temporal, restringe su ACL ANTES de escribir el PAT, y recien
-    # entonces lo mueve encima del destino - asi el PAT nunca queda, ni un instante, en un
-    # archivo con el ACL heredado/abierto (evita la carrera "escribir el secreto primero,
-    # restringir permisos despues" que tenia la version anterior).
-    $TmpFile = Join-Path $UvConfigDir ("uv.toml." + [System.IO.Path]::GetRandomFileName())
-    try {
-        New-Item -ItemType File -Path $TmpFile -Force | Out-Null
-        Protect-UvConfigFile -Path $TmpFile
-        if (Test-Path $UvConfigFile) {
-            Get-Content -Path $UvConfigFile -Raw | Set-Content -Path $TmpFile -NoNewline
+# Si ya existe una entrada para este feed (de una corrida anterior), la REEMPLAZA con el PAT que
+# el usuario acaba de dar, en vez de descartarlo en silencio. Bug real reproducido: un usuario
+# volvio a correr el instalador con un PAT nuevo porque el primero habia vencido/se pego mal; el
+# script detectaba "ya configurado", NUNCA escribia el PAT recien pegado, y seguia usando el
+# viejo - la instalacion fallaba con 401 (index no se pudo consultar) y parecia un problema del
+# PAT nuevo cuando en realidad nunca se uso. Pegar un PAT es una senal explicita de "quiero
+# (re)configurar esto", no algo para ignorar. Remove-UvIndexBlock quita SOLO el bloque
+# `[[index]]` de este feed (por nombre), preservando cualquier otro indice configurado.
+function Remove-UvIndexBlock {
+    param([string]$Path, [string]$FeedName)
+    if (-not (Test-Path $Path)) { return "" }
+    $raw = Get-Content -Path $Path -Raw
+    if ([string]::IsNullOrEmpty($raw)) { return "" }
+    $allLines = $raw -split "\r?\n"
+    $output = New-Object System.Collections.Generic.List[string]
+    $block = New-Object System.Collections.Generic.List[string]
+    $inBlock = $false
+    $matchFeed = $false
+    foreach ($line in $allLines) {
+        if ($line -eq "[[index]]") {
+            if ($inBlock -and -not $matchFeed) { $output.AddRange($block) }
+            $block = New-Object System.Collections.Generic.List[string]
+            $block.Add($line)
+            $inBlock = $true
+            $matchFeed = $false
+            continue
         }
-        Add-Content -Path $TmpFile -Value "`n[[index]]`nname = `"$Feed`"`nurl = `"$AuthedIndexUrl`""
-        Move-Item -Path $TmpFile -Destination $UvConfigFile -Force
-    } finally {
-        if (Test-Path $TmpFile) { Remove-Item -Path $TmpFile -Force }
+        if ($inBlock) {
+            $block.Add($line)
+            if ($line -eq "name = `"$FeedName`"") { $matchFeed = $true }
+            continue
+        }
+        $output.Add($line)
     }
-    # Move-Item no garantiza preservar el ACL del origen en todos los casos - reafirma en el
-    # destino final, defensivo.
-    Protect-UvConfigFile -Path $UvConfigFile
-    Write-Ok "Indice '$Feed' agregado a $UvConfigFile (ACL restringido a $env:USERNAME)"
+    if ($inBlock -and -not $matchFeed) { $output.AddRange($block) }
+    return ($output -join "`n")
 }
+
+$CleanedContent = Remove-UvIndexBlock -Path $UvConfigFile -FeedName $Feed
+
+# Escribe en un archivo temporal, restringe su ACL ANTES de escribir el PAT, y recien
+# entonces lo mueve encima del destino - asi el PAT nunca queda, ni un instante, en un
+# archivo con el ACL heredado/abierto (evita la carrera "escribir el secreto primero,
+# restringir permisos despues" que tenia la version anterior).
+$TmpFile = Join-Path $UvConfigDir ("uv.toml." + [System.IO.Path]::GetRandomFileName())
+try {
+    New-Item -ItemType File -Path $TmpFile -Force | Out-Null
+    Protect-UvConfigFile -Path $TmpFile
+    if ($CleanedContent) {
+        Set-Content -Path $TmpFile -Value $CleanedContent -NoNewline
+    }
+    Add-Content -Path $TmpFile -Value "`n[[index]]`nname = `"$Feed`"`nurl = `"$AuthedIndexUrl`""
+    Move-Item -Path $TmpFile -Destination $UvConfigFile -Force
+} finally {
+    if (Test-Path $TmpFile) { Remove-Item -Path $TmpFile -Force }
+}
+# Move-Item no garantiza preservar el ACL del origen en todos los casos - reafirma en el
+# destino final, defensivo.
+Protect-UvConfigFile -Path $UvConfigFile
+Write-Ok "Indice '$Feed' escrito en $UvConfigFile con el PAT actual (ACL restringido a $env:USERNAME)"
 
 # --- 4) Instala `maia` como tool global -------------------------------------
 # Sin --index aqui a proposito: el PAT NUNCA va como argumento de linea de comandos (ver nota
