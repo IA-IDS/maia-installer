@@ -51,12 +51,19 @@ ok "uv disponible ($(uv --version))"
 # ─── 2) PAT del feed (scope: Packaging → Read) ───────────────────────────────
 PAT="${MAIA_ARTIFACTS_PAT:-}"
 if [ -z "$PAT" ]; then
+  # Con `curl … | bash` la entrada estándar de bash ES el script: un `read` normal leía del pipe,
+  # recibía vacío y abortaba sin dejar escribir (visto en macOS). Se lee de la terminal real.
+  if ! { : </dev/tty; } 2>/dev/null; then
+    err "No hay una terminal para pedir el PAT. Pásalo por variable de entorno:"
+    err "  MAIA_ARTIFACTS_PAT=<pat> bash install.sh"
+    exit 1
+  fi
   echo
   echo "  El feed de MAIA es privado (Azure Artifacts) — necesitas un Personal Access Token."
   echo "  Genéralo en: https://dev.azure.com/${ORG}/_usersSettings/tokens"
   echo "  Scope requerido: Packaging → Read"
   echo
-  read -r -s -p "  Pega tu PAT: " PAT
+  read -r -s -p "  Pega tu PAT: " PAT </dev/tty
   echo
 fi
 if [ -z "$PAT" ]; then
